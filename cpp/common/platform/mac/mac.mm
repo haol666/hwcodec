@@ -15,11 +15,58 @@
 #include <TargetConditionals.h>
 #endif
 
-// ---------------------- OBS-style: VTCopyVideoEncoderList (no session, no test encode) ----------------------
-// Replaces the slow Path A + Path B approach (VTCopySupportedPropertyDictionaryForEncoder + VTCompressionSessionCreate)
-// with OBS's approach: VTCopyVideoEncoderList lists all registered encoders in milliseconds,
-// then reads kVTVideoEncoderList_IsHardwareAccelerated to determine hardware support.
-// This avoids the multi-second VideoToolbox session initialization that caused false negatives on Intel Mac/hackintosh.
+// ---------------------- OBS-style: VTCopyVideoEncoderList + real session probe ----------------------
+// Enumeration alone can lie on hackintosh / older Intel GPUs: an encoder may be
+// listed as hardware-accelerated while VTCompressionSessionCreate actually fails
+// (e.g. Skylake HD 515 lists HEVC hardware but session creation returns
+// kVTVideoEncoderMalfunctionErr -12903, since HEVC encode needs Kaby Lake+).
+// So after enumerating, create a minimal session with the same
+// RequireHardwareAcceleratedVideoEncoder spec FFmpeg videotoolboxenc uses with
+// allow_sw=0 — making "detected" always mean "creatable" at connection time.
+static void vtSessionProbeCallback(void *refCon, void *frameRefCon, OSStatus status,
+                                   VTEncodeInfoFlags infoFlags,
+                                   CMSampleBufferRef sampleBuffer) {
+    (void)refCon; (void)frameRefCon; (void)status; (void)infoFlags; (void)sampleBuffer;
+}
+
+static bool canCreateCompressionSession(CMVideoCodecType codecType) {
+    // Mimic FFmpeg videotoolboxenc.c default (allow_sw=0): hardware required.
+    CFMutableDictionaryRef encoderSpec = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    if (!encoderSpec) {
+        return false;
+    }
+    CFDictionarySetValue(encoderSpec,
+                         kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
+                         kCFBooleanTrue);
+
+    VTCompressionSessionRef session = NULL;
+    OSStatus status = VTCompressionSessionCreate(
+        kCFAllocatorDefault,
+        256, 256, /* small probe size — any real encoder accepts this, keeps probe fast */
+        codecType,
+        encoderSpec,
+        NULL, /* sourceImageBufferAttributes */
+        NULL, /* compressedDataAllocator */
+        vtSessionProbeCallback,
+        NULL, /* outputCallbackRefCon */
+        &session);
+
+    CFRelease(encoderSpec);
+
+    if (status != noErr || !session) {
+        LOG_WARN(std::string("VideoToolbox session probe failed for codec type ") +
+                 std::to_string(codecType) + ", OSStatus = " + std::to_string(status) +
+                 " - treating as unsupported (enumeration lied)");
+        return false;
+    }
+
+    VTCompressionSessionInvalidate(session);
+    CFRelease(session);
+    return true;
+}
+
 static int32_t hasHardwareEncoder(bool h265) {
     CMVideoCodecType codecType = h265 ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
 
@@ -49,6 +96,11 @@ static int32_t hasHardwareEncoder(bool h265) {
         Boolean isHW = (hwRef && CFBooleanGetValue(hwRef));
 
         if (isHW) {
+            // Enumerated as hardware — verify by actually creating a session the
+            // same way the real encoder will be created at connection time.
+            if (!canCreateCompressionSession(codecType)) {
+                continue; // try next entry of the same codec type, if any
+            }
             found = 1;
             break;
         }
