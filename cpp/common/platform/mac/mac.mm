@@ -15,80 +15,47 @@
 #include <TargetConditionals.h>
 #endif
 
-// ---------------------- Core: More Robust Hardware Encoder Detection ----------------------
+// ---------------------- OBS-style: VTCopyVideoEncoderList (no session, no test encode) ----------------------
+// Replaces the slow Path A + Path B approach (VTCopySupportedPropertyDictionaryForEncoder + VTCompressionSessionCreate)
+// with OBS's approach: VTCopyVideoEncoderList lists all registered encoders in milliseconds,
+// then reads kVTVideoEncoderList_IsHardwareAccelerated to determine hardware support.
+// This avoids the multi-second VideoToolbox session initialization that caused false negatives on Intel Mac/hackintosh.
 static int32_t hasHardwareEncoder(bool h265) {
     CMVideoCodecType codecType = h265 ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
 
-    // ---------- Path A: Quick Query with Enable + Require ----------
-    // Note: Require implies Enable, but setting both here makes it easier to bypass the strategy on some models that default to a software encoder.
-    CFMutableDictionaryRef spec = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
-                                                            &kCFTypeDictionaryKeyCallBacks,
-                                                            &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(spec, kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder, kCFBooleanTrue);
-    CFDictionarySetValue(spec, kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, kCFBooleanTrue);
-
-    CFDictionaryRef properties = NULL;
-    CFStringRef outID = NULL;
-
-    // Use 1280x720 for capability detection to reduce the probability of "no hardware encoding" due to resolution/level issues.
-    OSStatus result = VTCopySupportedPropertyDictionaryForEncoder(1280, 720, codecType, spec, &outID, &properties);
-
-    if (properties) CFRelease(properties);
-    if (outID) CFRelease(outID);
-    if (spec) CFRelease(spec);
-
-    if (result == noErr) {
-        // Explicitly found an encoder that meets the "hardware-only" specification.
-        return 1;
-    }
-    // Reaching here means either no encoder satisfying Require was found (common), or another error occurred.
-    // For all failure cases, continue with the safer "session-level confirmation" path to avoid misjudgment.
-
-    // ---------- Path B: Create Session and Read UsingHardwareAcceleratedVideoEncoder ----------
-    CFMutableDictionaryRef enableOnly = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
-                                                                  &kCFTypeDictionaryKeyCallBacks,
-                                                                  &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(enableOnly, kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder, kCFBooleanTrue);
-
-    VTCompressionSessionRef session = NULL;
-    // Also use 1280x720 to reduce profile/level interference
-    OSStatus st = VTCompressionSessionCreate(kCFAllocatorDefault,
-                                             1280, 720, codecType,
-                                             enableOnly,      /* encoderSpecification */
-                                             NULL,            /* sourceImageBufferAttributes */
-                                             NULL,            /* compressedDataAllocator */
-                                             NULL,            /* outputCallback */
-                                             NULL,            /* outputRefCon */
-                                             &session);
-    if (enableOnly) CFRelease(enableOnly);
-
-    if (st != noErr || !session) {
-        // Creation failed, considered no hardware available.
+    CFArrayRef encoderList = NULL;
+    OSStatus status = VTCopyVideoEncoderList(NULL, &encoderList);
+    if (status != noErr || !encoderList) {
         return 0;
     }
 
-    // First, explicitly prepare the encoding process to give VideoToolbox a chance to choose between software/hardware.
-    OSStatus prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session);
-    if (prepareStatus != noErr) {
-        VTCompressionSessionInvalidate(session);
-        CFRelease(session);
-        return 0;
+    int32_t found = 0;
+    CFIndex count = CFArrayGetCount(encoderList);
+
+    for (CFIndex i = 0; i < count; i++) {
+        CFDictionaryRef encoderDict = (CFDictionaryRef)CFArrayGetValueAtIndex(encoderList, i);
+        if (!encoderDict) continue;
+
+        // Check codec type matches
+        CFNumberRef codecTypeNum = (CFNumberRef)CFDictionaryGetValue(encoderDict, kVTVideoEncoderList_CodecType);
+        if (!codecTypeNum) continue;
+
+        CMVideoCodecType encCodecType = 0;
+        CFNumberGetValue(codecTypeNum, kCFNumberSInt32Type, &encCodecType);
+        if (encCodecType != codecType) continue;
+
+        // Check if hardware accelerated
+        CFBooleanRef hwRef = (CFBooleanRef)CFDictionaryGetValue(encoderDict, kVTVideoEncoderList_IsHardwareAccelerated);
+        Boolean isHW = (hwRef && CFBooleanGetValue(hwRef));
+
+        if (isHW) {
+            found = 1;
+            break;
+        }
     }
 
-    // Query the session's read-only property: whether it is using a hardware encoder.
-    CFBooleanRef usingHW = NULL;
-    st = VTSessionCopyProperty(session,
-                               kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
-                               kCFAllocatorDefault,
-                               (void **)&usingHW);
-
-    Boolean isHW = (st == noErr && usingHW && CFBooleanGetValue(usingHW));
-
-    if (usingHW) CFRelease(usingHW);
-    VTCompressionSessionInvalidate(session);
-    CFRelease(session);
-
-    return isHW ? 1 : 0;
+    CFRelease(encoderList);
+    return found;
 }
 
 // -------------- Your Public Interface: Unchanged ------------------
