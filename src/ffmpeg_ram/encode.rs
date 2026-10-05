@@ -305,15 +305,6 @@ impl Encoder {
                     continue;
                 }
 
-                // VideoToolbox encoders: skip test encode (OBS-style: enumerate → use)
-                // hasHardwareEncoder() already verified hardware support via VTCopyVideoEncoderList,
-                // no need to create an FFmpeg session and do a test encode (slow on Intel Mac/hackintosh)
-                if cfg!(target_os = "macos") && codec.name.contains("videotoolbox") {
-                    debug!("Skipping test for VideoToolbox encoder {} (already verified by hasHardwareEncoder)", codec.name);
-                    res.push(codec);
-                    continue;
-                }
-
                 debug!("Testing encoder: {}", codec.name);
 
                 let c = EncodeContext {
