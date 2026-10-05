@@ -30,7 +30,8 @@ static void vtSessionProbeCallback(void *refCon, void *frameRefCon, OSStatus sta
 }
 
 static bool canCreateCompressionSession(CMVideoCodecType codecType) {
-    // Mimic FFmpeg videotoolboxenc.c default (allow_sw=0): hardware required.
+    // Prefer hardware, fall back to Apple software encoder when GVA is unavailable
+    // (hackintosh / older GPUs). Matches hwcodec force_hw(allow_sw=1) semantics.
     CFMutableDictionaryRef encoderSpec = CFDictionaryCreateMutable(
         kCFAllocatorDefault, 1,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -38,7 +39,7 @@ static bool canCreateCompressionSession(CMVideoCodecType codecType) {
         return false;
     }
     CFDictionarySetValue(encoderSpec,
-                         kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
+                         kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
                          kCFBooleanTrue);
 
     VTCompressionSessionRef session = NULL;
