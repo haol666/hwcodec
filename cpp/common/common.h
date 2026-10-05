@@ -6,6 +6,10 @@
 #define MAX_GOP 0x7FFFFFFF // i32 max
 
 #define TEST_TIMEOUT_MS 1000
+#if defined(__APPLE__) && defined(__x86_64__)
+#undef TEST_TIMEOUT_MS
+#define TEST_TIMEOUT_MS 10000
+#endif
 #define ENCODE_TIMEOUT_MS 1000
 #define DECODE_TIMEOUT_MS 1000
 
