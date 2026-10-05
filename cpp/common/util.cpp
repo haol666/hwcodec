@@ -265,7 +265,7 @@ bool force_hw(void *priv_data, const std::string &name) {
     }
   }
   if (name.find("videotoolbox") != std::string::npos) {
-    if ((ret = av_opt_set_int(priv_data, "allow_sw", 1, 0)) < 0) {
+    if ((ret = av_opt_set_int(priv_data, "allow_sw", 0, 0)) < 0) {
       LOG_ERROR(std::string("mediafoundation set allow_sw failed, ret = ") +
                 av_err2str(ret));
       return false;
