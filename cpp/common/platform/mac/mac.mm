@@ -3,11 +3,17 @@
 #include <CoreMedia/CoreMedia.h>
 #include <MacTypes.h>
 #include <VideoToolbox/VideoToolbox.h>
+#include <atomic>
 #include <cstdlib>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <pthread.h>
 #include <ratio>
+#include <string>
 #include <sys/_types/_int32_t.h>
 #include <sys/event.h>
+#include <thread>
 #include <unistd.h>
 #include "../../log.h"
 
@@ -16,6 +22,39 @@
 #endif
 
 // ---------------------- Core: More Robust Hardware Encoder Detection ----------------------
+
+// Run `fn` on a detached worker thread and wait at most `timeout_ms`. On timeout
+// return 0 ("unsupported"): on some older Intel machines a VideoToolbox probe call
+// can block indefinitely, and one hung probe must degrade only its own result,
+// never the whole hwcodec check child (which delivers its result over ipc and is
+// SIGKILLed by a parent watchdog if it hangs). The worker owns a copy of `fn` and
+// keeps a shared_ptr to its state, so a late completion cannot touch freed stack.
+static int run_with_timeout(const std::function<int()> fn, int timeout_ms, const char *what) {
+    struct Shared {
+        std::atomic<int> done;
+        int value;
+        Shared() : done(0), value(0) {}
+    };
+    std::shared_ptr<Shared> shared = std::make_shared<Shared>();
+    std::thread worker([shared, fn]() {
+        shared->value = fn();
+        shared->done.store(1, std::memory_order_release);
+    });
+    worker.detach();
+    for (int waited = 0; waited < timeout_ms; waited += 50) {
+        if (shared->done.load(std::memory_order_acquire)) {
+            return shared->value;
+        }
+        usleep(50 * 1000);
+    }
+    if (shared->done.load(std::memory_order_acquire)) {
+        return shared->value;
+    }
+    LOG_WARN(std::string("VideoToolbox probe timed out after ") +
+             std::to_string(timeout_ms) + "ms: " + what +
+             " - treating as unsupported");
+    return 0;
+}
 static int32_t hasHardwareEncoder(bool h265) {
     CMVideoCodecType codecType = h265 ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264;
 
@@ -60,6 +99,20 @@ static int32_t hasHardwareEncoder(bool h265) {
                                              NULL,            /* outputCallback */
                                              NULL,            /* outputRefCon */
                                              &session);
+    if (st != noErr || !session) {
+        // A cold VideoToolbox service can fail a creatable encoder with a
+        // transient kVTVideoEncoderNotAvailableNowErr (-12903) that clears
+        // within seconds; retry once before concluding there is no hardware.
+        usleep(1500 * 1000);
+        st = VTCompressionSessionCreate(kCFAllocatorDefault,
+                                        1280, 720, codecType,
+                                        enableOnly,      /* encoderSpecification */
+                                        NULL,            /* sourceImageBufferAttributes */
+                                        NULL,            /* compressedDataAllocator */
+                                        NULL,            /* outputCallback */
+                                        NULL,            /* outputRefCon */
+                                        &session);
+    }
     if (enableOnly) CFRelease(enableOnly);
 
     if (st != noErr || !session) {
@@ -94,16 +147,38 @@ static int32_t hasHardwareEncoder(bool h265) {
 // -------------- Your Public Interface: Unchanged ------------------
 extern "C" void checkVideoToolboxSupport(int32_t *h264Encoder, int32_t *h265Encoder, int32_t *h264Decoder, int32_t *h265Decoder) {
     // https://stackoverflow.com/questions/50956097/determine-if-ios-device-can-support-hevc-encoding
-    // H.264 hardware encoding is the most battle-tested VideoToolbox path on Intel
-    // Macs (OBS ships it as its default macOS encoder). The reliability issues that
-    // motivated the 2024-06 disable are covered by two verification layers:
-    // hasHardwareEncoder()'s property-dictionary + session-level check below, and
-    // Encoder::available_encoders()' real encode probe with retries in encode.rs.
-    *h264Encoder = hasHardwareEncoder(false);
-    *h265Encoder = hasHardwareEncoder(true);
+    // Computed at most once per process (mutex-guarded): the check child reaches
+    // this through encoder enumeration, decoder enumeration and the gpu-signature
+    // field, and the RustDesk server reaches it through every signature compare on
+    // a cache-miss config load. One probe round serves all callers instead of
+    // hammering an unstable VideoToolbox service; a hung probe degrades only its
+    // own result (see run_with_timeout above).
+    static std::mutex cache_mutex;
+    static bool cached = false;
+    static int32_t cached_h264_encoder = 0;
+    static int32_t cached_h265_encoder = 0;
+    static int32_t cached_h264_decoder = 0;
+    static int32_t cached_h265_decoder = 0;
 
-    *h264Decoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264);
-    *h265Decoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (!cached) {
+        cached_h264_encoder = run_with_timeout(
+            [] { return hasHardwareEncoder(false); }, 10 * 1000, "h264 encoder detection");
+        cached_h265_encoder = run_with_timeout(
+            [] { return hasHardwareEncoder(true); }, 10 * 1000, "h265 encoder detection");
+        cached_h264_decoder = run_with_timeout(
+            [] { return VTIsHardwareDecodeSupported(kCMVideoCodecType_H264) ? 1 : 0; },
+            5 * 1000, "h264 decode support query");
+        cached_h265_decoder = run_with_timeout(
+            [] { return VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) ? 1 : 0; },
+            5 * 1000, "h265 decode support query");
+        cached = true;
+    }
+
+    *h264Encoder = cached_h264_encoder;
+    *h265Encoder = cached_h265_encoder;
+    *h264Decoder = cached_h264_decoder;
+    *h265Decoder = cached_h265_decoder;
 
     return;
 }
