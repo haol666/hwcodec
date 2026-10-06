@@ -265,16 +265,15 @@ impl Encoder {
 
         #[cfg(target_os = "macos")]
         {
-            let (_h264, h265, _, _) = crate::common::get_video_toolbox_codec_support();
-            // h264 encode failed too often, not AV_CODEC_CAP_HARDWARE
-            // if h264 {
-            //     codecs.push(CodecInfo {
-            //         name: "h264_videotoolbox".to_owned(),
-            //         format: H264,
-            //         priority: Priority::Best as _,
-            //         ..Default::default()
-            //     });
-            // }
+            let (h264, h265, _, _) = crate::common::get_video_toolbox_codec_support();
+            if h264 {
+                codecs.push(CodecInfo {
+                    name: "h264_videotoolbox".to_owned(),
+                    format: H264,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
             if h265 {
                 codecs.push(CodecInfo {
                     name: "hevc_videotoolbox".to_owned(),
