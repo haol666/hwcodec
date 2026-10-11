@@ -196,6 +196,22 @@ impl Encoder {
             );
 
             #[cfg(windows)]
+            {
+                // vgl: H.264 encoding passthrough to the KVM host hardware
+                // (Unraid VCN) via the virtio-gpu video protocol - project
+                // haol666/virgl-video-windows. No vendor detection needed:
+                // the runtime probe below attempts a real 720p encode via
+                // FFmpeg's h264_vgl and silently drops the candidate when
+                // the bridge is absent (bare-metal / non-KVM guests).
+                codecs.push(CodecInfo {
+                    name: "h264_vgl".to_owned(),
+                    format: H264,
+                    priority: Priority::Good as _,
+                    ..Default::default()
+                });
+            }
+
+            #[cfg(windows)]
             if _intel && contains(Driver::MFX, H264) {
                 codecs.push(CodecInfo {
                     name: "h264_qsv".to_owned(),
