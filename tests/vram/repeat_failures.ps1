@@ -26,7 +26,7 @@ try {
     foreach ($test in @('repeat_failures', 'encoder_cleanup', 'decoder_cleanup', 'mfx_exceptions', 'ram_send_eagain')) {
         $testExe = Join-Path $outDir "$test.exe"
         $source = if ($test -in @('encoder_cleanup', 'decoder_cleanup')) { 'cleanup_failures.cpp' }
-                  elseif ($test -eq 'ram_send_eagain') { 'ram/send_eagain.cpp' }
+                  elseif ($test -eq 'ram_send_eagain') { '../ram/send_eagain.cpp' }
                   else { "$test.cpp" }
         $defines = @(if ($test -eq 'encoder_cleanup') { '/DTEST_ENCODER' })
         & cl.exe /nologo /EHs /O2 /std:c++17 /MT /DNOMINMAX @defines `
