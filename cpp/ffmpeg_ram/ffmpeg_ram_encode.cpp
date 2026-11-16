@@ -341,8 +341,16 @@ private:
     bool encoded = false;
     frame->pts = ms;
     if ((ret = avcodec_send_frame(c_, frame)) < 0) {
-      LOG_ERROR(std::string("avcodec_send_frame failed, ret = ") + av_err2str(ret));
-      return ret;
+      if (ret != AVERROR(EAGAIN)) {
+        LOG_ERROR(std::string("avcodec_send_frame failed, ret = ") + av_err2str(ret));
+        return ret;
+      }
+      // EAGAIN on send: the encoder still buffers accepted input and its
+      // output must be drained before it accepts more frames (FFmpeg
+      // send/receive API). Fall through to the receive loop so the queued
+      // packets are delivered; this frame is dropped. Screen frames are
+      // independent, so a dropped frame costs no reference structure.
+      ret = 0;
     }
 
     auto start = util::now();
