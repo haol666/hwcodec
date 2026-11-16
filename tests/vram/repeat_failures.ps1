@@ -29,7 +29,9 @@ try {
                   elseif ($test -eq 'ram_send_eagain') { '../ram/send_eagain.cpp' }
                   else { "$test.cpp" }
         $defines = @(if ($test -eq 'encoder_cleanup') { '/DTEST_ENCODER' })
-        & cl.exe /nologo /EHs /O2 /std:c++17 /MT /DNOMINMAX @defines `
+        # The RAM encoder's translation unit includes win.h on Windows.
+        $ramIncludes = @(if ($test -eq 'ram_send_eagain') { "/I$repo/cpp/common/platform/win" })
+        & cl.exe /nologo /EHs /O2 /std:c++17 /MT /DNOMINMAX @defines @ramIncludes `
             "/I$vcpkg/include" "/I$repo/cpp/common" `
             "/I$repo/externals/MediaSDK_22.5.4/api/include" `
             "/Fo$outDir/$test.obj" "/Fe$testExe" `
