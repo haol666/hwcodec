@@ -23,9 +23,11 @@ try {
 
     $outDir = (New-Item -ItemType Directory -Force 'target/repeat-failures').FullName
     $vcpkg = Join-Path $env:VCPKG_ROOT 'installed/x64-windows-static'
-    foreach ($test in @('repeat_failures', 'encoder_cleanup', 'decoder_cleanup', 'mfx_exceptions')) {
+    foreach ($test in @('repeat_failures', 'encoder_cleanup', 'decoder_cleanup', 'mfx_exceptions', 'ram_send_eagain')) {
         $testExe = Join-Path $outDir "$test.exe"
-        $source = if ($test -in @('encoder_cleanup', 'decoder_cleanup')) { 'cleanup_failures.cpp' } else { "$test.cpp" }
+        $source = if ($test -in @('encoder_cleanup', 'decoder_cleanup')) { 'cleanup_failures.cpp' }
+                  elseif ($test -eq 'ram_send_eagain') { 'ram/send_eagain.cpp' }
+                  else { "$test.cpp" }
         $defines = @(if ($test -eq 'encoder_cleanup') { '/DTEST_ENCODER' })
         & cl.exe /nologo /EHs /O2 /std:c++17 /MT /DNOMINMAX @defines `
             "/I$vcpkg/include" "/I$repo/cpp/common" `
@@ -38,7 +40,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Building $test failed." }
         & $testExe
         if ($LASTEXITCODE -ne 0) { throw "$test failed." }
-        if ($test -ne 'repeat_failures') {
+        if ($test -in @('encoder_cleanup', 'decoder_cleanup', 'mfx_exceptions')) {
             foreach ($mode in @(3, 4)) {
                 # The injected 0xE0424242 exception and STATUS_ACCESS_VIOLATION.
                 $expectedExit = if ($mode -eq 3) { -532528574 } else { -1073741819 }
