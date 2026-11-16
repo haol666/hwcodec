@@ -366,6 +366,12 @@ impl Encoder {
                                         attempt + 1,
                                         err
                                     );
+                                    // A real encode error will not clear on a retry (the
+                                    // probe always feeds an identical frame), so do not
+                                    // retry: one failing codec (e.g. HEVC on a GPU without
+                                    // HEVC encode) costs a single blocking probe, not
+                                    // max_attempts of them.
+                                    break;
                                 }
                             }
                         }

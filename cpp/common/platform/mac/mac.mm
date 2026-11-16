@@ -92,19 +92,27 @@ static int32_t hasHardwareEncoder(bool h265) {
 }
 
 // -------------- Your Public Interface: Unchanged ------------------
+static int32_t g_h264Enc = -1;
+static int32_t g_h265Enc = -1;
+static int32_t g_h264Dec = -1;
+static int32_t g_h265Dec = -1;
+
 extern "C" void checkVideoToolboxSupport(int32_t *h264Encoder, int32_t *h265Encoder, int32_t *h264Decoder, int32_t *h265Decoder) {
-    // https://stackoverflow.com/questions/50956097/determine-if-ios-device-can-support-hevc-encoding
-    // H.264 hardware encoding is the most battle-tested VideoToolbox path on Intel
-    // Macs (OBS ships it as its default macOS encoder). The reliability issues that
-    // motivated the 2024-06 disable are covered by two verification layers:
-    // hasHardwareEncoder()'s property-dictionary + session-level check below, and
-    // Encoder::available_encoders()' real encode probe with retries in encode.rs.
-    *h264Encoder = hasHardwareEncoder(false);
-    *h265Encoder = hasHardwareEncoder(true);
-
-    *h264Decoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264);
-    *h265Decoder = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC);
-
+    // Cache capability results once per process: hasHardwareEncoder() opens a
+    // VTCompressionSession and can take ~10-40s per probe on older Intel Macs.
+    // checkVideoToolboxSupport() and GetHwcodecGpuSignature() both need the same
+    // four flags, so computing them once and reusing avoids a second
+    // multi-second probe on every codec/signature query.
+    if (g_h264Enc < 0) {
+        g_h264Enc = hasHardwareEncoder(false);
+        g_h265Enc = hasHardwareEncoder(true);
+        g_h264Dec = VTIsHardwareDecodeSupported(kCMVideoCodecType_H264);
+        g_h265Dec = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC);
+    }
+    *h264Encoder = g_h264Enc;
+    *h265Encoder = g_h265Enc;
+    *h264Decoder = g_h264Dec;
+    *h265Decoder = g_h265Dec;
     return;
 }
 
